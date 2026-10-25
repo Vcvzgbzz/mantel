@@ -1,0 +1,6 @@
+{
+  // Typechecks the tests along with src; the build only emits src.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": "." },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

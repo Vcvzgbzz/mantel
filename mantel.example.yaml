@@ -1,0 +1,14 @@
+db: mantel.db
+listen: 127.0.0.1:7411
+defaultSensitivity: normal
+
+embed:
+  url: http://localhost:11434/v1/embeddings
+  model: nomic-embed-text
+  trust: local
+
+# rerank:
+#   url: http://localhost:8000/v1/rerank
+#   model: BAAI/bge-reranker-v2-m3
+#   trust: local
+#   threshold: 0.85

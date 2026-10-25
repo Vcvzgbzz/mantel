@@ -1,0 +1,61 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+import { parse } from "yaml";
+
+import type { EmbedConfig, Endpoint, RerankConfig } from "./models.js";
+import { RECALL_DEFAULTS, type RecallConfig } from "./recall.js";
+import type { Sensitivity } from "./types.js";
+
+export interface MantelConfig {
+  /** SQLite file; relative paths resolve against the config file. */
+  db: string;
+  /** host:port for `mantel serve`. */
+  listen: string;
+  /** Sensitivity of memories written without one. */
+  defaultSensitivity: Sensitivity;
+  embed?: EmbedConfig;
+  rerank?: RerankConfig;
+  recall: RecallConfig;
+}
+
+export const DEFAULTS: MantelConfig = {
+  db: "mantel.db",
+  listen: "127.0.0.1:7411",
+  defaultSensitivity: "normal",
+  recall: RECALL_DEFAULTS,
+};
+
+function endpoint(raw: unknown, where: string): Endpoint {
+  const e = raw as Partial<Endpoint> | undefined;
+  if (!e || typeof e.url !== "string" || typeof e.model !== "string") throw new Error(`${where}: url and model are required`);
+  if (e.trust !== "local" && e.trust !== "remote") throw new Error(`${where}: trust must be local or remote`);
+  return e as Endpoint;
+}
+
+/** Builds a config from a parsed object, applying defaults and rejecting what would silently misbehave. */
+export function toConfig(raw: Record<string, unknown>, base = process.cwd()): MantelConfig {
+  const cfg: MantelConfig = {
+    ...DEFAULTS,
+    ...(raw as Partial<MantelConfig>),
+    recall: { ...RECALL_DEFAULTS, ...(raw.recall as Partial<RecallConfig>), gate: { ...RECALL_DEFAULTS.gate, ...(raw.recall as Partial<RecallConfig>)?.gate } },
+  };
+  cfg.db = cfg.db === ":memory:" ? cfg.db : resolve(base, cfg.db);
+  if (cfg.defaultSensitivity !== "normal" && cfg.defaultSensitivity !== "private") throw new Error("defaultSensitivity must be normal or private");
+  if (raw.embed) {
+    const e = endpoint(raw.embed, "embed") as EmbedConfig;
+    if (e.fallback) endpoint(e.fallback, "embed.fallback");
+    cfg.embed = e;
+  }
+  if (raw.rerank) {
+    const r = endpoint(raw.rerank, "rerank") as RerankConfig;
+    if (typeof r.threshold !== "number") throw new Error("rerank: threshold is required (it depends on the model; see the README)");
+    cfg.rerank = r;
+  }
+  return cfg;
+}
+
+export function loadConfig(path: string): MantelConfig {
+  if (!existsSync(path)) return toConfig({}, dirname(resolve(path)));
+  return toConfig((parse(readFileSync(path, "utf8")) ?? {}) as Record<string, unknown>, dirname(resolve(path)));
+}
