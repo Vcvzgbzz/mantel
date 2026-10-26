@@ -60,6 +60,8 @@ const toProposal = (r: ProposalRow): Proposal => ({
 export interface ExtractConfig {
   /** Keep episodes this long after extraction; 0 deletes them as soon as they are extracted. */
   retainDays: number;
+  /** See MantelConfig.retireUnusedDays. */
+  retireUnusedDays?: number;
   /** Appended to the extraction prompt. */
   guidance?: string;
 }
@@ -250,6 +252,11 @@ export class Worker {
     if (Date.now() - this.lastPurge > 3_600_000) {
       this.lastPurge = Date.now();
       this.deps.jobs.purge(this.deps.config.retainDays);
+      const days = this.deps.config.retireUnusedDays ?? 0;
+      if (days > 0) {
+        const n = this.deps.store.retireUnused(days, "retire");
+        if (n) this.deps.log?.("retire.done", { ended: n, days });
+      }
     }
   }
 

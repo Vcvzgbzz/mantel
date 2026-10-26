@@ -65,6 +65,9 @@ rerank:
   threshold: 0.85              # model-specific; see below
   timeoutMs: 1000
 
+limits: { memoriesPerUser: 5000, charsPerUser: 20000000 }   # per user, active memories only; 0 = none
+retireUnusedDays: 60           # end project memories nobody has used in 60 days (kept as history); 0 = never
+
 recall:
   k: 3
   candidates: 8
@@ -96,6 +99,9 @@ All endpoints take `Authorization: Bearer <key>`. Times are ISO 8601 (epoch mill
 | `GET` | `/v1/jobs`, `/v1/jobs/:id` | Extraction status, results and errors. |
 | `GET` | `/v1/proposals` | Changes extraction wants to make to memories a person wrote. |
 | `POST` | `/v1/proposals/:id/accept`, `/dismiss` | Apply one, or throw it away. |
+| `POST` | `/v1/import` | Carry memories over from another system with timestamps, earlier versions and status. Admin. |
+| `GET` | `/v1/evidence/summary` | Evidence and joking counts per memory. |
+| `POST` | `/v1/vectors` | `{ids}`: each memory's mean embedding (base64 float32), for similarity maps. |
 | `POST` | `/v1/erase` | `{user}` or `{subject}`: erase everything of a user or about a subject. Admin. |
 | `GET` `POST` `DELETE` | `/v1/keys` | Manage keys. Admin. |
 
@@ -151,6 +157,15 @@ mantel key create --tenant me --scopes read --user alice      # an end user's ke
 ```
 
 `audience` caps what a key's results may contain. A `remote` key (the default) never sees private memories, for callers whose model runs elsewhere. A user-pinned key cannot write shared memories.
+
+## Docker
+
+```sh
+docker run -v $PWD/mantel.yaml:/etc/mantel/mantel.yaml -v mantel-data:/data -p 7411:7411 ghcr.io/vcvzgbzz/mantel:main
+```
+
+In a container, set `listen: 0.0.0.0:7411` and `db: /data/mantel.db`. Create the first tenant with
+`docker exec <container> node dist/cli.js -c /etc/mantel/mantel.yaml tenant create me`.
 
 ## Library
 

@@ -93,6 +93,20 @@ export class VectorIndex {
     return map;
   }
 
+  /** One unit vector per memory (the mean of its pieces), for memories whose stored vectors match their text. */
+  means(tenant: string, memories: Memory[]): Map<string, Float32Array> {
+    const vecs = this.vectors(tenant);
+    const out = new Map<string, Float32Array>();
+    for (const m of memories) {
+      const v = vecs.get(m.id);
+      if (!v || v.hash !== this.hashOf(m) || !v.vecs.length) continue;
+      const sum = new Array<number>(v.vecs[0]!.length).fill(0);
+      for (const x of v.vecs) x.forEach((n, i) => (sum[i]! += n));
+      out.set(m.id, unit(sum));
+    }
+    return out;
+  }
+
   /** Drops a memory's cached vectors (the rows go with the memory). */
   forget(tenant: string, id: string): void {
     this.cache.get(tenant)?.delete(id);

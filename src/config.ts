@@ -6,6 +6,7 @@ import { parse } from "yaml";
 import type { ExtractConfig } from "./jobs.js";
 import type { ChatConfig, EmbedConfig, Endpoint, RerankConfig } from "./models.js";
 import { RECALL_DEFAULTS, type RecallConfig } from "./recall.js";
+import type { Limits } from "./store.js";
 import type { Sensitivity } from "./types.js";
 
 export interface MantelConfig {
@@ -20,6 +21,10 @@ export interface MantelConfig {
   /** The chat model that turns conversations into memories. */
   extract?: ChatConfig & Partial<ExtractConfig>;
   recall: RecallConfig;
+  /** Caps on each user's active memories; 0 = none. */
+  limits: Limits;
+  /** End project memories unused for this many days (0 = never). Memories with evidence are kept. */
+  retireUnusedDays: number;
 }
 
 export const DEFAULTS: MantelConfig = {
@@ -27,6 +32,8 @@ export const DEFAULTS: MantelConfig = {
   listen: "127.0.0.1:7411",
   defaultSensitivity: "normal",
   recall: RECALL_DEFAULTS,
+  limits: { memoriesPerUser: 0, charsPerUser: 0 },
+  retireUnusedDays: 0,
 };
 
 function endpoint(raw: unknown, where: string): Endpoint {
@@ -41,9 +48,13 @@ export function toConfig(raw: Record<string, unknown>, base = process.cwd()): Ma
   const cfg: MantelConfig = {
     ...DEFAULTS,
     ...(raw as Partial<MantelConfig>),
+    limits: { ...DEFAULTS.limits, ...(raw.limits as Partial<Limits>) },
     recall: { ...RECALL_DEFAULTS, ...(raw.recall as Partial<RecallConfig>), gate: { ...RECALL_DEFAULTS.gate, ...(raw.recall as Partial<RecallConfig>)?.gate } },
   };
   cfg.db = cfg.db === ":memory:" ? cfg.db : resolve(base, cfg.db);
+  for (const [k, v] of Object.entries({ ...cfg.limits, retireUnusedDays: cfg.retireUnusedDays })) {
+    if (!Number.isInteger(v) || v < 0) throw new Error(`${k} must be a whole number, 0 or more`);
+  }
   if (cfg.defaultSensitivity !== "normal" && cfg.defaultSensitivity !== "private") throw new Error("defaultSensitivity must be normal or private");
   if (raw.embed) {
     const e = endpoint(raw.embed, "embed") as EmbedConfig;

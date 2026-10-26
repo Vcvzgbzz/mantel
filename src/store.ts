@@ -97,8 +97,37 @@ function check(m: Required<Omit<NewMemory, "evidence">> & { evidence?: EvidenceI
   }
 }
 
+/** Caps on one user's active memories in a tenant; 0 = none. Superseded and retracted history does not count. */
+export interface Limits { memoriesPerUser: number; charsPerUser: number }
+
+/** A memory carried over from another system, with its timestamps and earlier versions. */
+export interface ImportedMemory extends NewMemory {
+  status?: Status;
+  createdAt?: number;
+  updatedAt?: number;
+  usedAt?: number;
+  /** Earlier versions, oldest first. */
+  revisions?: { description: string; body: string; at: number; reason?: string }[];
+}
+
 export class Store {
-  constructor(readonly db: Db, readonly defaults: { sensitivity: Sensitivity } = { sensitivity: "normal" }) {}
+  constructor(
+    readonly db: Db,
+    readonly defaults: { sensitivity: Sensitivity } = { sensitivity: "normal" },
+    readonly limits: Limits = { memoriesPerUser: 0, charsPerUser: 0 },
+  ) {}
+
+  /** Refuses a write that would put a user over their caps. `adding` is the new active text; `replacing` is active text it removes. */
+  private withinLimits(scope: { tenant: string; user: string }, adding: number, replacing = 0, newRows = 1): void {
+    const { memoriesPerUser, charsPerUser } = this.limits;
+    if (!memoriesPerUser && !charsPerUser) return;
+    const u = this.db.prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(body) + LENGTH(description)), 0) AS chars FROM memories
+       WHERE tenant_id = ? AND user_id = ? AND status = 'active'`,
+    ).get(scope.tenant, scope.user) as { n: number; chars: number };
+    if (memoriesPerUser && u.n + newRows > memoriesPerUser) throw new MantelError("too_large", `this user already has ${memoriesPerUser} active memories`);
+    if (charsPerUser && u.chars - replacing + adding > charsPerUser) throw new MantelError("too_large", `this user's memories would exceed ${charsPerUser} characters`);
+  }
 
   /* ------------------------------------------------------------ tenants and keys */
 
@@ -225,6 +254,7 @@ export class Store {
         this.revise(old.id, actor, reason ?? "superseded");
       }
       if (m.name !== null && this.byName(scope, m.name)) throw new MantelError("conflict", `an active memory named ${m.name} exists`);
+      this.withinLimits(scope, m.body.length + m.description.length);
       this.db.prepare(
         `INSERT INTO memories (${COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, NULL, ?, ?, ?)`,
       ).run(id, scope.tenant, scope.user, scope.project, m.subject, m.kind, m.name, m.description, m.body, m.origin, m.sensitivity,
@@ -262,6 +292,7 @@ export class Store {
         && next.kind === cur.kind && next.sensitivity === cur.sensitivity && next.validFrom === cur.validFrom && next.validTo === cur.validTo;
       if (same && !patch.evidence?.length) return cur;
       if (!same) {
+        this.withinLimits({ tenant, user: cur.user }, next.body.length + next.description.length, cur.body.length + cur.description.length, 0);
         this.db.prepare(
           `UPDATE memories SET name = ?, description = ?, body = ?, subject = ?, kind = ?, sensitivity = ?, valid_from = ?, valid_to = ?,
              version = version + 1, updated_at = ? WHERE id = ?`,
@@ -289,6 +320,60 @@ export class Store {
       this.revise(id, actor, reason);
       return this.get(tenant, id)!;
     });
+  }
+
+  /** Writes a memory exactly as given, with its earlier versions as revisions. For moving data in, not for clients. */
+  importMemory(scope: WriteScope, rec: ImportedMemory, actor: string): Memory {
+    const now = Date.now();
+    const m = {
+      name: rec.name ?? null, description: (rec.description ?? "").replace(/\s+/g, " ").trim(), body: rec.body ?? "",
+      subject: rec.subject ?? "", kind: rec.kind ?? "note", origin: rec.origin ?? "import", sensitivity: rec.sensitivity ?? this.defaults.sensitivity,
+      validFrom: rec.validFrom ?? null, validTo: rec.validTo ?? null, evidence: rec.evidence,
+    };
+    check(m);
+    const status = rec.status ?? "active";
+    if (!["active", "superseded", "retracted"].includes(status)) throw invalid("status must be active, superseded or retracted");
+    const revs = rec.revisions ?? [];
+    for (const r of revs) {
+      if (typeof r?.body !== "string" || typeof r.description !== "string" || !Number.isFinite(r.at)) throw invalid("each revision needs description, body and at");
+    }
+    const id = randomUUID();
+    const created = rec.createdAt ?? now, updated = rec.updatedAt ?? created;
+    return tx(this.db, () => {
+      if (status === "active" && m.name !== null && this.byName(scope, m.name)) throw new MantelError("conflict", `an active memory named ${m.name} exists`);
+      if (status === "active") this.withinLimits(scope, m.body.length + m.description.length);
+      this.db.prepare(`INSERT INTO memories (${COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`).run(
+        id, scope.tenant, scope.user, scope.project, m.subject, m.kind, m.name, m.description, m.body, m.origin, m.sensitivity,
+        status, revs.length + 1, m.validFrom, m.validTo, created, updated, rec.usedAt ?? updated);
+      const put = this.db.prepare(
+        `INSERT INTO revisions (memory_id, version, description, body, origin, status, valid_from, valid_to, actor, reason, at)
+         VALUES (?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?)`,
+      );
+      revs.forEach((r, i) => put.run(id, i + 1, r.description, r.body, m.origin, actor, r.reason ?? null, r.at));
+      this.revise(id, actor, "imported");
+      this.db.prepare("UPDATE revisions SET at = ? WHERE memory_id = ? AND version = ?").run(updated, id, revs.length + 1);
+      this.addEvidence(id, m.evidence ?? []);
+      return this.get(scope.tenant, id)!;
+    });
+  }
+
+  /** How many evidence items each memory in a read scope has, and how many were said in jest. */
+  evidenceSummary(rs: ReadScope): { memoryId: string; n: number; joking: number }[] {
+    const [where, args] = readWhere(rs, "m.");
+    return (this.db.prepare(
+      `SELECT e.memory_id AS memoryId, COUNT(*) AS n, SUM(e.tone = 'joking') AS joking FROM evidence e JOIN memories m ON m.id = e.memory_id
+       WHERE m.status = 'active' AND ${where} GROUP BY e.memory_id`,
+    ).all(...args) as { memoryId: string; n: number; joking: number }[]).map((r) => ({ memoryId: r.memoryId, n: r.n, joking: r.joking }));
+  }
+
+  /** Ends project memories nobody has recalled or read for `days`. Memories with evidence are observations, not working notes, and stay. */
+  retireUnused(days: number, actor: string): number {
+    const ids = this.db.prepare(
+      `SELECT tenant_id AS tenant, id FROM memories m WHERE status = 'active' AND project != '' AND used_at < ?
+       AND NOT EXISTS (SELECT 1 FROM evidence e WHERE e.memory_id = m.id)`,
+    ).all(Date.now() - days * 86_400_000) as { tenant: string; id: string }[];
+    for (const r of ids) this.end(r.tenant, r.id, undefined, actor, `unused for ${days} days`);
+    return ids.length;
   }
 
   /** Records that an active memory stopped being true at `at`, with no replacement. It stays readable as history. */

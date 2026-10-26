@@ -6,7 +6,7 @@ import type { Job, JobStatus } from "./jobs.js";
 import type { Mantel } from "./mantel.js";
 import type { Candidate } from "./recall.js";
 import { need } from "./scope.js";
-import type { ApiKey, KeyScope, MemoryPatch, NewMemory } from "./store.js";
+import type { ApiKey, ImportedMemory, KeyScope, MemoryPatch, NewMemory } from "./store.js";
 import type { Audience, Evidence, Memory, Revision, Status } from "./types.js";
 
 const MAX_BODY = 1_000_000;
@@ -217,6 +217,28 @@ export function handler(mantel: Mantel) {
       if (m) one(res, 200, m);
       else send(res, 204);
     }],
+    ["POST", /^\/v1\/import$/, async ({ key, req, res }) => {
+      const b = await readJson(req);
+      if (!Array.isArray(b.memories) || b.memories.length > 1_000) throw invalid("memories must be a list of at most 1000");
+      const items = (b.memories as Json[]).map((x) => {
+        const t = (k: string) => time(x[k], k) ?? undefined;
+        const revisions = Array.isArray(x.revisions) ? (x.revisions as Json[]).map((r) => ({ ...r, at: time(r.at, "revision at") })) : undefined;
+        return { ...memoryInput(x), ...(typeof x.status === "string" ? { status: x.status as Status } : {}),
+          createdAt: t("createdAt"), updatedAt: t("updatedAt"), usedAt: t("usedAt"), ...(revisions ? { revisions } : {}) };
+      }) as unknown as ImportedMemory[];
+      for (const it of items) if (typeof it.body !== "string") throw invalid("each memory needs a body");
+      send(res, 200, { results: mantel.importMemories(key, requested(b), items) });
+    }],
+    ["GET", /^\/v1\/evidence\/summary$/, ({ key, res, url }) => {
+      send(res, 200, { memories: mantel.evidenceSummary(key, requested(url.searchParams)) });
+    }],
+    ["POST", /^\/v1\/vectors$/, async ({ key, req, res }) => {
+      const b = await readJson(req);
+      if (!Array.isArray(b.ids) || b.ids.some((x) => typeof x !== "string")) throw invalid("ids must be a list of memory ids");
+      const out = mantel.vectors(key, b.ids as string[]);
+      // Little-endian float32, base64: a fifth the size of JSON numbers.
+      send(res, 200, { model: out.model, vectors: Object.fromEntries([...out.vectors].map(([id, v]) => [id, Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("base64")])) });
+    }],
     ["POST", /^\/v1\/erase$/, async ({ key, req, res }) => {
       const b = await readJson(req);
       const f = { ...(b.user !== undefined ? { user: str(b.user, "user")! } : {}), ...(b.subject !== undefined ? { subject: str(b.subject, "subject")! } : {}) };
@@ -249,7 +271,11 @@ export function handler(mantel: Mantel) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       const url = new URL(req.url ?? "/", "http://mantel");
-      if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
+      if (req.method === "GET" && url.pathname === "/healthz") {
+        // Says only whether the database answers: it is unauthenticated.
+        const ok = mantel.healthy();
+        return send(res, ok ? 200 : 503, { ok });
+      }
       const auth = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "");
       const key = auth ? mantel.authenticate(auth[1]!) : undefined;
       if (!key) throw new MantelError("unauthorized", "a valid API key is required (Authorization: Bearer mk_...)");

@@ -6,7 +6,7 @@ import { Jobs, Worker, type Job, type JobStatus, type Proposal } from "./jobs.js
 import { Chat, Embedder, Reranker } from "./models.js";
 import { formatRecall, recall, search, VectorIndex, type Candidate, type RecallDeps, type RecallResult } from "./recall.js";
 import { canRead, canWrite, need, readScope, writeScope, type Requested } from "./scope.js";
-import { Store, type ApiKey, type MemoryPatch, type NewMemory } from "./store.js";
+import { Store, type ApiKey, type ImportedMemory, type MemoryPatch, type NewMemory } from "./store.js";
 import type { Audience, Evidence, Memory, Revision, Status } from "./types.js";
 
 const actorOf = (key: ApiKey) => `key:${key.id}`;
@@ -20,7 +20,7 @@ export class Mantel {
   private deps: RecallDeps;
 
   constructor(readonly config: MantelConfig) {
-    this.store = new Store(openDb(config.db), { sensitivity: config.defaultSensitivity });
+    this.store = new Store(openDb(config.db), { sensitivity: config.defaultSensitivity }, config.limits);
     this.index = config.embed ? new VectorIndex(this.store, new Embedder(config.embed)) : null;
     this.deps = { store: this.store, index: this.index, reranker: config.rerank ? new Reranker(config.rerank) : null, config: config.recall };
     this.jobs = new Jobs(this.store.db);
@@ -29,7 +29,7 @@ export class Mantel {
       jobs: this.jobs,
       chat: config.extract ? new Chat(config.extract) : null,
       recall: this.deps,
-      config: { retainDays: config.extract?.retainDays ?? 0, ...(config.extract?.guidance ? { guidance: config.extract.guidance } : {}) },
+      config: { retainDays: config.extract?.retainDays ?? 0, retireUnusedDays: config.retireUnusedDays, ...(config.extract?.guidance ? { guidance: config.extract.guidance } : {}) },
       changed: (tenant) => {
         // Extraction may have erased memories; their cached vectors go with them.
         this.index?.dropTenant(tenant);
@@ -46,6 +46,15 @@ export class Mantel {
   close(): void {
     this.worker.stop();
     this.store.db.close();
+  }
+
+  healthy(): boolean {
+    try {
+      this.store.db.prepare("SELECT 1").get();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   authenticate(secret: string): ApiKey | undefined {
@@ -205,5 +214,34 @@ export class Mantel {
       : this.create(key, {}, { name: target.name, kind: target.kind, subject: target.subject, description: p.description, body: p.body, origin: "user", sensitivity: target.sensitivity },
         { supersedes: { id: target.id, version: p.memoryVersion }, reason: `accepted: ${p.reason}` });
     return m;
+  }
+
+  /** Carries memories over from another system, keeping timestamps and earlier versions. Admin only; each item succeeds or fails alone. */
+  importMemories(key: ApiKey, r: Requested, items: ImportedMemory[]): ({ id: string } | { error: string })[] {
+    need(key, "admin");
+    const scope = writeScope(key, r);
+    const out = items.map((rec) => {
+      try {
+        return { id: this.store.importMemory(scope, rec, actorOf(key)).id };
+      } catch (e) {
+        if (e instanceof MantelError) return { error: e.message };
+        throw e;
+      }
+    });
+    this.changed(key.tenant);
+    return out;
+  }
+
+  evidenceSummary(key: ApiKey, r: Requested) {
+    need(key, "read");
+    return this.store.evidenceSummary(readScope(key, r));
+  }
+
+  /** Each readable memory's mean embedding, for clients that draw similarity maps. Missing ids are not yet embedded or not visible. */
+  vectors(key: ApiKey, ids: string[]): { model: string | null; vectors: Map<string, Float32Array> } {
+    need(key, "read");
+    if (!this.index) return { model: null, vectors: new Map() };
+    const ms = ids.slice(0, 10_000).map((id) => this.store.get(key.tenant, id)).filter((m): m is Memory => !!m && m.status === "active" && canRead(key, m));
+    return { model: this.index.embedder.model, vectors: this.index.means(key.tenant, ms) };
   }
 }
