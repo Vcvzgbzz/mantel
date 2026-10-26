@@ -9,6 +9,8 @@ export interface Endpoint {
   /** Name of the environment variable holding a bearer token, if the endpoint needs one. */
   apiKeyEnv?: string;
   timeoutMs?: number;
+  /** Sent with every request, e.g. a router's header that keeps work on this machine. */
+  headers?: Record<string, string>;
 }
 
 export interface EmbedConfig extends Endpoint {
@@ -25,7 +27,7 @@ export interface RerankConfig extends Endpoint {
 
 const headers = (e: Endpoint): Record<string, string> => {
   const key = e.apiKeyEnv ? process.env[e.apiKeyEnv] : undefined;
-  return { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) };
+  return { "content-type": "application/json", ...e.headers, ...(key ? { authorization: `Bearer ${key}` } : {}) };
 };
 
 async function post(e: Endpoint, body: unknown, timeoutMs: number): Promise<unknown> {

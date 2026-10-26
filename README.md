@@ -48,6 +48,7 @@ embed:
   trust: local                 # local | remote: may this endpoint see private memories?
   # queryPrefix: "Instruct: ...\nQuery:"   # for instruction-tuned embedders
   # apiKeyEnv: OPENAI_API_KEY
+  # headers: { x-stay: local }   # any endpoint: sent with every request
   # fallback: { url: ..., model: nomic-embed-text, trust: local }   # same model, another host
 
 extract:                       # optional: turns conversations into memories
