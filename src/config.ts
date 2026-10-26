@@ -6,6 +6,7 @@ import { parse } from "yaml";
 import type { ExtractConfig } from "./jobs.js";
 import type { ChatConfig, EmbedConfig, Endpoint, RerankConfig } from "./models.js";
 import { RECALL_DEFAULTS, type RecallConfig } from "./recall.js";
+import { HEARTH_DEFAULTS, type HearthHookConfig } from "./hearth.js";
 import type { Limits } from "./store.js";
 import type { Sensitivity } from "./types.js";
 
@@ -25,6 +26,8 @@ export interface MantelConfig {
   limits: Limits;
   /** End project memories unused for this many days (0 = never). Memories with evidence are kept. */
   retireUnusedDays: number;
+  /** Serve /hooks/hearth: mantel as a hearth plugin. Absent, the hook answers 404. */
+  hearth?: HearthHookConfig;
 }
 
 export const DEFAULTS: MantelConfig = {
@@ -70,6 +73,14 @@ export function toConfig(raw: Record<string, unknown>, base = process.cwd()): Ma
     const x = endpoint(raw.extract, "extract") as ChatConfig & Partial<ExtractConfig>;
     if (x.retainDays !== undefined && !(Number.isFinite(x.retainDays) && x.retainDays >= 0)) throw new Error("extract.retainDays must be 0 or more");
     cfg.extract = x;
+  }
+  if (raw.hearth) {
+    const h = { ...HEARTH_DEFAULTS, ...(raw.hearth as Partial<HearthHookConfig>) };
+    if (!Number.isInteger(h.k) || h.k < 1 || !Number.isInteger(h.contextMessages) || h.contextMessages < 1) throw new Error("hearth: k and contextMessages are whole numbers, 1 or more");
+    if (!Array.isArray(h.localTools) || typeof h.callers !== "object") throw new Error("hearth: localTools is a list and callers a map");
+    h.userHeader = h.userHeader.toLowerCase();
+    h.projectHeader = h.projectHeader.toLowerCase();
+    cfg.hearth = h;
   }
   return cfg;
 }

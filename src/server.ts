@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { invalid, MantelError } from "./errors.js";
 import type { SpanInput } from "./extract.js";
 import type { Job, JobStatus } from "./jobs.js";
+import { hearthHook, MANIFEST } from "./hearth.js";
 import type { Mantel } from "./mantel.js";
 import type { Candidate } from "./recall.js";
 import { need } from "./scope.js";
@@ -243,6 +244,14 @@ export function handler(mantel: Mantel) {
       const out = mantel.vectors(key, b.ids as string[]);
       // Little-endian float32, base64: a fifth the size of JSON numbers.
       send(res, 200, { model: out.model, vectors: Object.fromEntries([...out.vectors].map(([id, v]) => [id, Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("base64")])) });
+    }],
+    ["GET", /^\/hooks\/hearth\/manifest$/, ({ res }) => {
+      if (!mantel.config.hearth) throw new MantelError("not_found", "the hearth hook is off; set hearth: in the config");
+      send(res, 200, MANIFEST);
+    }],
+    ["POST", /^\/hooks\/hearth$/, async ({ key, req, res }) => {
+      if (!mantel.config.hearth) throw new MantelError("not_found", "the hearth hook is off; set hearth: in the config");
+      send(res, 200, await hearthHook(mantel, key, mantel.config.hearth, await readJson(req)));
     }],
     ["POST", /^\/v1\/erase$/, async ({ key, req, res }) => {
       const b = await readJson(req);

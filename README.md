@@ -159,6 +159,38 @@ mantel key create --tenant me --scopes read --user alice      # an end user's ke
 
 `audience` caps what a key's results may contain. A `remote` key (the default) never sees private memories, for callers whose model runs elsewhere. A user-pinned key cannot write shared memories.
 
+## As a hearth plugin
+
+[hearth](https://github.com/Vcvzgbzz/hearth) can call mantel on every chat request it routes: mantel recalls
+into the request after hearth has decided where it runs, and learns from the exchange once the reply is
+done. Any client of hearth gets memory without code of its own.
+
+```yaml
+# mantel.yaml
+hearth:
+  userHeader: x-mantel-user        # the caller names its mantel user...
+  callers: { "key:laptop": alice } # ...or hearth's api key label does
+  projectHeader: x-mantel-project
+  localTools: [bash, read, edit]   # tool output the assistant may build on; any other tool counts as the web
+```
+
+```yaml
+# hearth.yaml
+plugins:
+  memory:
+    use: http://127.0.0.1:7411/hooks/hearth
+    trust: http
+    key: env:MANTEL_KEY             # a mantel key with read and write, audience local
+    reads: [messages, headers, reply]
+```
+
+- Memories go into the last user message, inside a `<mantel-recall>` block, so the start of the prompt
+  stays the same from turn to turn.
+- A request hearth sends to a peer is recalled for a `remote` audience: no private memory leaves with it.
+- A request that names no user gets no memory, and is not learned from.
+- When the reply is done, the latest messages and the reply become an episode, once per request. The
+  recalled block becomes a `memory` span, so mantel never learns a memory again from its own recall.
+
 ## Docker
 
 ```sh

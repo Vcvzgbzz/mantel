@@ -39,7 +39,7 @@ export class Mantel {
     });
   }
 
-  static open(raw: Partial<MantelConfig> & Record<string, unknown> = {}): Mantel {
+  static open(raw: Record<string, unknown> = {}): Mantel {
     return new Mantel(toConfig(raw));
   }
 
