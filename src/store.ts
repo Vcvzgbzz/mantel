@@ -16,6 +16,8 @@ import {
   type WriteScope,
 } from "./types.js";
 
+const FTS_POOL = 1_000;
+
 export const LIMITS = { body: 16_384, description: 300, subject: 200, evidence: 50, quote: 2_000, context: 32, contextText: 2_000, list: 500 };
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KIND = /^[a-z][a-z0-9_-]{0,39}$/;
@@ -49,7 +51,10 @@ export interface NewMemory {
   evidence?: EvidenceInput[];
 }
 
-export type MemoryPatch = Partial<Omit<NewMemory, "origin">>;
+export type MemoryPatch = Partial<Omit<NewMemory, "origin">> & {
+  /** With evidence: drop what the patched lines already had instead of adding to it. */
+  replaceEvidence?: boolean;
+};
 
 interface MemoryRow {
   id: string; tenant_id: string; user_id: string; project: string; subject: string; kind: string; name: string | null;
@@ -205,11 +210,13 @@ export class Store {
     const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].slice(0, 32);
     if (!terms.length) return [];
     const [where, args] = readWhere(rs, "m.");
+    // FTS5 ranks inside the index far faster than bm25() over a join (2 ms vs 300 ms at 2k memories),
+    // so it ranks first and the scope filter runs on its top rows.
+    // ponytail: a tenant outranked by more than FTS_POOL other rows loses matches; per-tenant FTS tables if many tenants share a file.
     const rows = this.db.prepare(
-      `SELECT m.id AS id, bm25(memories_fts) AS score FROM memories_fts JOIN memories m ON m.seq = memories_fts.rowid
-       WHERE memories_fts MATCH ? AND m.status = 'active' AND ${where} ORDER BY score LIMIT ?`,
-    ).all(terms.map((t) => `"${t}"`).join(" OR "), ...args, limit) as { id: string; score: number }[];
-    // bm25() is lower-is-better; callers want higher-is-better.
+      `SELECT m.id AS id, f.rank AS score FROM (SELECT rowid, rank FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?) f
+       JOIN memories m ON m.seq = f.rowid WHERE m.status = 'active' AND ${where} ORDER BY score LIMIT ?`,
+    ).all(terms.map((t) => `"${t}"`).join(" OR "), Math.max(FTS_POOL, limit * 25), ...args, limit) as { id: string; score: number }[];
     return rows.map((r) => ({ id: r.id, score: -r.score }));
   }
 
@@ -303,6 +310,10 @@ export class Store {
       const lines = bodyLines(next.body);
       for (const e of this.evidence(tenant, id)) {
         if (e.line !== null && !lines.has(e.line)) this.db.prepare("DELETE FROM evidence WHERE memory_id = ? AND line = ?").run(id, e.line);
+      }
+      if (patch.replaceEvidence && patch.evidence?.length) {
+        const st = this.db.prepare("DELETE FROM evidence WHERE memory_id = ? AND line IS ?");
+        for (const l of new Set(patch.evidence.map((e) => (e.line !== undefined ? lineKey(e.line) : null)))) st.run(id, l);
       }
       this.addEvidence(id, patch.evidence ?? []);
       return this.get(tenant, id)!;

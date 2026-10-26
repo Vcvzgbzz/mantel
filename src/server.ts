@@ -55,6 +55,7 @@ function memoryInput(b: Json): MemoryPatch & Pick<NewMemory, "origin"> {
   const from = time(b.validFrom, "validFrom"), to = time(b.validTo, "validTo");
   if (from !== undefined) out.validFrom = from;
   if (to !== undefined) out.validTo = to;
+  if (b.replaceEvidence === true) out.replaceEvidence = true;
   if (b.evidence !== undefined) {
     if (!Array.isArray(b.evidence)) throw invalid("evidence must be a list");
     out.evidence = b.evidence as NewMemory["evidence"];
@@ -157,6 +158,10 @@ export function handler(mantel: Mantel) {
       const at = time(b.at, "at");
       one(res, 200, mantel.end(key, params[0]!, ifMatch(req), str(b.reason, "reason") ?? "", at ?? undefined));
     }],
+    ["POST", /^\/v1\/memories\/([^/]+)\/touch$/, ({ key, res, params }) => {
+      mantel.touch(key, params[0]!);
+      send(res, 204);
+    }],
     ["DELETE", /^\/v1\/memories\/([^/]+)$/, ({ key, res, params }) => {
       mantel.erase(key, params[0]!);
       send(res, 204);
@@ -209,8 +214,8 @@ export function handler(mantel: Mantel) {
       send(res, 200, { jobs: mantel.listJobs(key, status ? { status } : {}).map(jobJson) });
     }],
     ["GET", /^\/v1\/jobs\/([^/]+)$/, ({ key, res, params }) => send(res, 200, jobJson(mantel.job(key, params[0]!)))],
-    ["GET", /^\/v1\/proposals$/, ({ key, res }) => {
-      send(res, 200, { proposals: mantel.proposals(key).map((p) => ({ ...p, createdAt: iso(p.createdAt) })) });
+    ["GET", /^\/v1\/proposals$/, ({ key, res, url }) => {
+      send(res, 200, { proposals: mantel.proposals(key, url.searchParams.get("user") ?? undefined).map((p) => ({ ...p, createdAt: iso(p.createdAt) })) });
     }],
     ["POST", /^\/v1\/proposals\/([^/]+)\/(accept|dismiss)$/, ({ key, res, params }) => {
       const m = mantel.resolveProposal(key, params[0]!, params[1] === "accept");

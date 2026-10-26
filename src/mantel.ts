@@ -193,12 +193,20 @@ export class Mantel {
   }
 
   /** Open proposals for memories this key may change. */
-  proposals(key: ApiKey): Proposal[] {
+  /** Open proposals for memories this key may change; `user` narrows an unpinned key to one user's. */
+  proposals(key: ApiKey, user?: string): Proposal[] {
     need(key, "read");
     return this.jobs.proposals(key.tenant).filter((p) => {
       const m = this.store.get(key.tenant, p.memoryId);
-      return m && canRead(key, m) && canWrite(key, m);
+      return m && canRead(key, m) && canWrite(key, m) && (user === undefined || m.user === user);
     });
+  }
+
+  /** Records a use without reading: a memory someone chose to keep stops ageing toward retirement. */
+  touch(key: ApiKey, id: string): void {
+    need(key, "write");
+    this.readable(key, id, "local");
+    this.store.touch([id]);
   }
 
   /** Applies a proposal as the key's own change, or throws it away. */

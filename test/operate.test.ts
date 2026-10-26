@@ -84,3 +84,27 @@ test("health reflects whether the database answers", () => {
   m.close();
   assert.equal(m.healthy(), false);
 });
+
+test("replaceEvidence swaps a line's evidence instead of adding to it", () => {
+  const m = open();
+  const key = tenantKey(m);
+  const a = m.create(key, {}, { body: "- likes tea\n- has a dog", evidence: [{ quote: "tea 1", line: "likes tea" }, { quote: "dog", line: "has a dog" }] });
+  const b = m.update(key, a.id, 1, { evidence: [{ quote: "tea 2", line: "likes tea" }], replaceEvidence: true });
+  assert.deepEqual(m.evidence(key, b.id).map((e) => e.quote).sort(), ["dog", "tea 2"]);
+  m.update(key, a.id, b.version, { evidence: [{ quote: "tea 3", line: "likes tea" }] });
+  assert.equal(m.evidence(key, a.id).filter((e) => e.line === "likes tea").length, 2, "without it, evidence accumulates");
+});
+
+test("touch records a use; proposals narrow to one user", () => {
+  const m = open();
+  const key = tenantKey(m);
+  const a = m.create(key, { user: "u" }, { body: "x" });
+  m.store.db.prepare("UPDATE memories SET used_at = 0 WHERE id = ?").run(a.id);
+  m.touch(key, a.id);
+  assert.ok(m.get(key, a.id).usedAt > 0);
+  const b = m.create(key, { user: "v" }, { body: "y", origin: "user" });
+  m.jobs.propose(key.tenant, { memoryId: a.id, memoryVersion: 1, action: "end", description: "", body: "x", reason: "r", quote: "q" }, "j");
+  m.jobs.propose(key.tenant, { memoryId: b.id, memoryVersion: 1, action: "end", description: "", body: "y", reason: "r", quote: "q" }, "j");
+  assert.equal(m.proposals(key).length, 2);
+  assert.deepEqual(m.proposals(key, "v").map((p) => p.memoryId), [b.id]);
+});

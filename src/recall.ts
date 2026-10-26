@@ -72,6 +72,19 @@ export class VectorIndex {
 
   /** Changes when the text or the model does, so a model switch re-embeds instead of mixing vector spaces. */
   hashOf(m: Memory): string {
+    // A memory's text only changes with its version, so the hash is computed once per version.
+    const k = `${m.id}:${m.version}`;
+    const hit = this.hashes.get(k);
+    if (hit) return hit;
+    if (this.hashes.size > 100_000) this.hashes.clear();
+    const h = this.hashOf_(m);
+    this.hashes.set(k, h);
+    return h;
+  }
+
+  private hashes = new Map<string, string>();
+
+  private hashOf_(m: Memory): string {
     return createHash("sha1").update(`${this.embedder.model}\0${m.name ?? ""}\0${m.description}\0${m.body}`).digest("hex");
   }
 
@@ -195,7 +208,7 @@ async function fuse(deps: RecallDeps, rs: ReadScope, q: string, limit: number, u
   }
 
   const sim = new Map<string, number>();
-  const best = new Map<string, string>();
+  const bestPiece = new Map<string, number>();
   if (qVec && index) {
     const vecs = index.vectors(rs.tenant);
     for (const m of pool.values()) {
@@ -205,7 +218,7 @@ async function fuse(deps: RecallDeps, rs: ReadScope, q: string, limit: number, u
       sim.set(m.id, Math.max(...s));
       // The reranker judges the best body piece; the header alone is a title with nothing in it to judge.
       const body = s.length > 1 ? s.slice(1) : s;
-      best.set(m.id, piecesOf(m)[body.indexOf(Math.max(...body)) + (s.length > 1 ? 1 : 0)] ?? m.body);
+      bestPiece.set(m.id, body.indexOf(Math.max(...body)) + (s.length > 1 ? 1 : 0));
     }
   }
   const text = new Map(store.textSearch(rs, q, ARM * 2).filter((r) => pool.has(r.id)).slice(0, ARM).map((r) => [r.id, r.score]));
@@ -216,6 +229,8 @@ async function fuse(deps: RecallDeps, rs: ReadScope, q: string, limit: number, u
   const cands = [...fused].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => ({
     memory: pool.get(id)!, similarity: sim.get(id) ?? null, textMatch: text.has(id), relevance: null, kept: false,
   }));
+  // Only the candidates are chunked, not every memory in the pool.
+  const best = new Map(cands.filter((c) => bestPiece.has(c.memory.id)).map((c) => [c.memory.id, piecesOf(c.memory)[bestPiece.get(c.memory.id)!] ?? c.memory.body]));
   return { cands, best, vectors: sim.size > 0 };
 }
 
