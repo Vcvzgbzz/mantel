@@ -291,6 +291,20 @@ export class Store {
     });
   }
 
+  /** Records that an active memory stopped being true at `at`, with no replacement. It stays readable as history. */
+  end(tenant: string, id: string, expect: number | undefined, actor: string, reason: string, at = Date.now()): Memory {
+    return tx(this.db, () => {
+      const cur = this.get(tenant, id);
+      if (!cur) throw notFound();
+      if (expect !== undefined && cur.version !== expect) throw stale(cur);
+      if (cur.status !== "active") throw new MantelError("conflict", `that memory is already ${cur.status}`);
+      if (cur.validFrom !== null && at < cur.validFrom) throw invalid("a memory cannot end before it began");
+      this.db.prepare(`UPDATE memories SET status = 'superseded', valid_to = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(at, Date.now(), id);
+      this.revise(id, actor, reason);
+      return this.get(tenant, id)!;
+    });
+  }
+
   /** Removes a memory and everything derived from it, leaving only an erasure record. Call `scrub()` after a batch. */
   erase(tenant: string, id: string, actor: string): boolean {
     return tx(this.db, () => {

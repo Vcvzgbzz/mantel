@@ -79,6 +79,29 @@ export class Embedder {
   }
 }
 
+export interface ChatConfig extends Endpoint {
+  maxTokens?: number;
+  /** Extra request fields the server needs, e.g. `{chat_template_kwargs: {enable_thinking: false}}`. */
+  extraBody?: Record<string, unknown>;
+}
+
+/** An OpenAI-shaped /v1/chat/completions endpoint, used for extraction. */
+export class Chat {
+  constructor(readonly cfg: ChatConfig) {}
+
+  async complete(system: string, user: string): Promise<string> {
+    const res = (await post(this.cfg, {
+      model: this.cfg.model,
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      temperature: 0,
+      max_tokens: this.cfg.maxTokens ?? 4_000,
+      stream: false,
+      ...this.cfg.extraBody,
+    }, this.cfg.timeoutMs ?? 180_000)) as { choices?: { message?: { content?: string | null } }[] };
+    return res.choices?.[0]?.message?.content ?? "";
+  }
+}
+
 export class Reranker {
   constructor(readonly cfg: RerankConfig) {}
 

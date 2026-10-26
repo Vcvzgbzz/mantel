@@ -48,9 +48,20 @@ export const fakeReranker = () =>
     };
   });
 
-export function open(o: { embed?: Fake; embedTrust?: Audience; rerank?: Fake; rerankTrust?: Audience; db?: string } = {}): Mantel {
+/** A chat endpoint whose reply the test chooses per request. */
+export async function fakeChat(): Promise<Fake & { reply: (system: string, user: string) => string }> {
+  const f = (await fake((b) => {
+    const [sys, usr] = b.messages as { content: string }[];
+    return { choices: [{ message: { content: f.reply(sys!.content, usr!.content) } }] };
+  })) as Fake & { reply: (system: string, user: string) => string };
+  f.reply = () => "{}";
+  return f;
+}
+
+export function open(o: { embed?: Fake; embedTrust?: Audience; rerank?: Fake; rerankTrust?: Audience; chat?: Fake; chatTrust?: Audience; db?: string; retainDays?: number } = {}): Mantel {
   return Mantel.open({
     db: o.db ?? ":memory:",
+    ...(o.chat ? { extract: { url: o.chat.url, model: "fake-chat", trust: o.chatTrust ?? "local", ...(o.retainDays !== undefined ? { retainDays: o.retainDays } : {}) } } : {}),
     ...(o.embed ? { embed: { url: o.embed.url, model: "fake-embed", trust: o.embedTrust ?? "local" } } : {}),
     ...(o.rerank ? { rerank: { url: o.rerank.url, model: "fake-rerank", trust: o.rerankTrust ?? "local", threshold: 0.6 } } : {}),
   });

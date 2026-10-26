@@ -111,6 +111,65 @@ const MIGRATIONS: string[] = [
     INSERT INTO memories_fts (rowid, name, description, body) VALUES (new.seq, new.name, new.description, new.body);
   END;
   `,
+  `
+  -- A chunk of conversation sent for extraction. Kept only until extracted, unless retention says otherwise.
+  CREATE TABLE episodes (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL DEFAULT '',
+    project     TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT '',
+    sensitivity TEXT NOT NULL CHECK (sensitivity IN ('normal','private')),
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX episodes_tenant ON episodes (tenant_id, user_id, created_at);
+
+  -- origin is derived at ingest: who the text came from, after taint from web output.
+  CREATE TABLE spans (
+    episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL,
+    role       TEXT NOT NULL CHECK (role IN ('user','assistant','tool','system','memory')),
+    origin     TEXT NOT NULL CHECK (origin IN ('user','agent','tool','web','system','memory')),
+    tool       TEXT,
+    content    TEXT NOT NULL,
+    at         INTEGER,
+    PRIMARY KEY (episode_id, seq)
+  );
+
+  CREATE TABLE jobs (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL DEFAULT '',
+    kind            TEXT NOT NULL,
+    episode_id      TEXT REFERENCES episodes(id) ON DELETE SET NULL,
+    idempotency_key TEXT,
+    status          TEXT NOT NULL CHECK (status IN ('queued','running','done','failed')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    run_after       INTEGER NOT NULL,
+    error           TEXT,
+    result          TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX jobs_idempotency ON jobs (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  CREATE INDEX jobs_queue ON jobs (status, run_after);
+
+  -- A change extraction wants to make to a memory a person wrote; applied only if accepted.
+  CREATE TABLE proposals (
+    id             TEXT PRIMARY KEY,
+    tenant_id      TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    memory_id      TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    memory_version INTEGER NOT NULL,
+    action         TEXT NOT NULL CHECK (action IN ('update','end')),
+    description    TEXT NOT NULL,
+    body           TEXT NOT NULL,
+    reason         TEXT NOT NULL,
+    quote          TEXT NOT NULL,
+    job_id         TEXT,
+    created_at     INTEGER NOT NULL
+  );
+  CREATE INDEX proposals_memory ON proposals (tenant_id, memory_id);
+  `,
 ];
 
 export function openDb(path: string): Db {

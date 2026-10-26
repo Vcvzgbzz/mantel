@@ -7,6 +7,7 @@ A self-hosted memory service for agents. Every memory records where it came from
 - **Non-destructive changes.** Edits need the version they were based on (`If-Match`) and every version is kept. A memory that stops being true is *superseded* by its replacement (with an end date) or *retracted*; both stay readable.
 - **Real erasure.** `DELETE` removes a memory with its history, evidence, vectors and full-text entries, scrubs the file, and leaves only a record that something was erased.
 - **Local-only data stays local.** Endpoints are declared `local` or `remote`. Private memories are never embedded, reranked or recalled through a remote model, and a local caller's query is never sent to one.
+- **Extraction with provenance.** Send a conversation; a background job pulls out facts, each backed by a verbatim quote from one message, and each takes that message's origin. Assistant text that follows web output counts as web. Facts are judged against existing memories, and code (not the model) applies the result: supersede, end, add, or a *proposal* when the memory was written by a person.
 - **Scoped keys.** Tenant → user → project. A key can be pinned to a user and/or project; a request can narrow inside a key's scope, never widen it.
 
 Embedded SQLite (`node:sqlite`, FTS5), no native dependencies, any OpenAI-compatible embedding endpoint and any Cohere-style rerank endpoint.
@@ -49,6 +50,14 @@ embed:
   # apiKeyEnv: OPENAI_API_KEY
   # fallback: { url: ..., model: nomic-embed-text, trust: local }   # same model, another host
 
+extract:                       # optional: turns conversations into memories
+  url: http://localhost:11434/v1/chat/completions
+  model: qwen3:14b
+  trust: local
+  retainDays: 0                # delete each conversation once extracted (default)
+  # guidance: "Also remember the user's hardware."   # appended to the extraction prompt
+  # extraBody: { chat_template_kwargs: { enable_thinking: false } }
+
 rerank:
   url: http://localhost:8000/v1/rerank
   model: BAAI/bge-reranker-v2-m3
@@ -77,11 +86,16 @@ All endpoints take `Authorization: Bearer <key>`. Times are ISO 8601 (epoch mill
 | `GET` | `/v1/memories/:id` | Read. `ETag` is the version. |
 | `PATCH` | `/v1/memories/:id` | Edit in place. Requires `If-Match`. |
 | `POST` | `/v1/memories/:id/retract` | Mark as wrong, with a `reason`. |
+| `POST` | `/v1/memories/:id/end` | Mark as no longer true (`reason`, optional `at`), with no replacement. |
 | `DELETE` | `/v1/memories/:id` | Erase permanently. |
 | `GET` | `/v1/memories/:id/revisions` | Every version, newest first. |
 | `GET` | `/v1/memories/:id/evidence` | Quotes and context the memory was learned from. |
 | `POST` | `/v1/recall` | `{query, k?, threshold?, explain?}`: what to put in front of a model. |
 | `POST` | `/v1/search` | `{query, limit?, includeUntrusted?}`: ranked matches, no gate. |
+| `POST` | `/v1/episodes` | Queue a conversation for extraction. See below. |
+| `GET` | `/v1/jobs`, `/v1/jobs/:id` | Extraction status, results and errors. |
+| `GET` | `/v1/proposals` | Changes extraction wants to make to memories a person wrote. |
+| `POST` | `/v1/proposals/:id/accept`, `/dismiss` | Apply one, or throw it away. |
 | `POST` | `/v1/erase` | `{user}` or `{subject}`: erase everything of a user or about a subject. Admin. |
 | `GET` `POST` `DELETE` | `/v1/keys` | Manage keys. Admin. |
 
@@ -98,6 +112,36 @@ A memory:
 ```
 
 `user: ""` is shared by the tenant's users. `project: ""` applies in every project. `subject` says who or what the memory is about (`person:alex`). `validFrom`/`validTo` are when it was true in the world. Revisions record when it was written.
+
+### Extraction
+
+```json
+POST /v1/episodes
+Idempotency-Key: session-42:turn-17
+{
+  "project": "my-repo",
+  "source": "session-42",
+  "spans": [
+    { "role": "user", "content": "We moved deploys to container images." },
+    { "role": "tool", "tool": "web_fetch", "content": "…page text…" },
+    { "role": "tool", "tool": "shell", "origin": "tool", "content": "PASS 42 tests" },
+    { "role": "assistant", "content": "Tests pass with npm test." },
+    { "role": "memory", "content": "…memories recalled into this turn…" }
+  ]
+}
+```
+
+Returns `202` with a job. The same `Idempotency-Key` returns the same job, so a client can resend safely.
+
+- Roles: `user`, `assistant`, `tool`, `system`, `memory`. System text and recalled memories are never extracted from, so a recalled memory cannot be saved again as new evidence.
+- **Tool output is untrusted unless marked.** A tool span is `web` unless it has `"origin": "tool"`, meaning a local tool whose output the assistant may build on (a shell, a test run). Assistant text after web output, until the next user message, counts as web as well.
+- Facts from web or tool content are stored with that origin. They are never recalled automatically, and they can never change or remove another memory.
+- Facts about the user come only from the user's own messages.
+- A memory a person wrote (`origin: user`) is never changed automatically. The change becomes a proposal.
+- Asking to forget something erases the memory, when the user asked.
+- Each memory written by extraction gets evidence: the quote and a snapshot of the messages around it.
+- `private` episodes are only sent to a `local` extraction model, and the memories they produce are private.
+- A failed job is retried with backoff, then marked `failed` with its error.
 
 ### Keys
 
@@ -121,7 +165,6 @@ const { hits, context } = await mantel.recall(key, { project: "web" }, "how do w
 
 ## Not built yet
 
-- Extraction: turning session transcripts into memories, with each fact tied to a quoted span and inheriting that span's origin.
 - An MCP server over the same API.
 - A calibration command for thresholds.
 - A Postgres backend for multi-replica deployments.

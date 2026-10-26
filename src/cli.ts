@@ -49,7 +49,9 @@ function tenant(): string {
 try {
   if (cmd === "serve") {
     await serve(mantel, config.listen);
-    const models = [config.embed && `embed ${config.embed.model} (${config.embed.trust})`, config.rerank && `rerank ${config.rerank.model} (${config.rerank.trust})`];
+    mantel.worker.start();
+    const models = [config.embed && `embed ${config.embed.model} (${config.embed.trust})`, config.rerank && `rerank ${config.rerank.model} (${config.rerank.trust})`,
+      config.extract && `extract ${config.extract.model} (${config.extract.trust})`];
     console.log(`mantel listening on http://${config.listen} — ${models.filter(Boolean).join(", ") || "no models: full-text search only, recall keeps nothing"}`);
   } else if (cmd === "tenant" && sub === "create" && arg) {
     const id = mantel.store.createTenant(arg);

@@ -3,7 +3,8 @@ import { dirname, resolve } from "node:path";
 
 import { parse } from "yaml";
 
-import type { EmbedConfig, Endpoint, RerankConfig } from "./models.js";
+import type { ExtractConfig } from "./jobs.js";
+import type { ChatConfig, EmbedConfig, Endpoint, RerankConfig } from "./models.js";
 import { RECALL_DEFAULTS, type RecallConfig } from "./recall.js";
 import type { Sensitivity } from "./types.js";
 
@@ -16,6 +17,8 @@ export interface MantelConfig {
   defaultSensitivity: Sensitivity;
   embed?: EmbedConfig;
   rerank?: RerankConfig;
+  /** The chat model that turns conversations into memories. */
+  extract?: ChatConfig & Partial<ExtractConfig>;
   recall: RecallConfig;
 }
 
@@ -51,6 +54,11 @@ export function toConfig(raw: Record<string, unknown>, base = process.cwd()): Ma
     const r = endpoint(raw.rerank, "rerank") as RerankConfig;
     if (typeof r.threshold !== "number") throw new Error("rerank: threshold is required (it depends on the model; see the README)");
     cfg.rerank = r;
+  }
+  if (raw.extract) {
+    const x = endpoint(raw.extract, "extract") as ChatConfig & Partial<ExtractConfig>;
+    if (x.retainDays !== undefined && !(Number.isFinite(x.retainDays) && x.retainDays >= 0)) throw new Error("extract.retainDays must be 0 or more");
+    cfg.extract = x;
   }
   return cfg;
 }

@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import { invalid, MantelError } from "./errors.js";
+import type { SpanInput } from "./extract.js";
+import type { Job, JobStatus } from "./jobs.js";
 import type { Mantel } from "./mantel.js";
 import type { Candidate } from "./recall.js";
 import { need } from "./scope.js";
@@ -24,6 +26,7 @@ export function memoryJson(m: Memory): Json {
 const candidateJson = (c: Candidate): Json => ({ memory: memoryJson(c.memory), similarity: c.similarity, textMatch: c.textMatch, relevance: c.relevance, kept: c.kept });
 const revisionJson = (r: Revision): Json => ({ ...r, validFrom: iso(r.validFrom), validTo: iso(r.validTo), at: iso(r.at) });
 const evidenceJson = (e: Evidence): Json => ({ ...e, at: iso(e.at) });
+const jobJson = (j: Job): Json => ({ id: j.id, kind: j.kind, status: j.status, attempts: j.attempts, error: j.error, result: j.result, createdAt: iso(j.createdAt), updatedAt: iso(j.updatedAt) });
 
 /** Accepts an ISO date or epoch milliseconds; null clears. */
 function time(v: unknown, field: string): number | null | undefined {
@@ -149,6 +152,11 @@ export function handler(mantel: Mantel) {
       const b = await readJson(req);
       one(res, 200, mantel.retract(key, params[0]!, ifMatch(req), str(b.reason, "reason") ?? ""));
     }],
+    ["POST", /^\/v1\/memories\/([^/]+)\/end$/, async ({ key, req, res, params }) => {
+      const b = await readJson(req);
+      const at = time(b.at, "at");
+      one(res, 200, mantel.end(key, params[0]!, ifMatch(req), str(b.reason, "reason") ?? "", at ?? undefined));
+    }],
     ["DELETE", /^\/v1\/memories\/([^/]+)$/, ({ key, res, params }) => {
       mantel.erase(key, params[0]!);
       send(res, 204);
@@ -183,6 +191,31 @@ export function handler(mantel: Mantel) {
         untrusted: b.includeUntrusted === true,
       });
       send(res, 200, { results: hits.map(candidateJson) });
+    }],
+    ["POST", /^\/v1\/episodes$/, async ({ key, req, res }) => {
+      const b = await readJson(req);
+      if (!Array.isArray(b.spans)) throw invalid("spans must be a list of {role, content, tool?, origin?, at?}");
+      const spans = (b.spans as Json[]).map((x) => ({ ...x, ...(x?.at !== undefined ? { at: time(x.at, "at") ?? undefined } : {}) })) as unknown as SpanInput[];
+      const idem = req.headers["idempotency-key"];
+      const out = mantel.ingest(key, requested(b), {
+        spans,
+        ...(typeof b.source === "string" ? { source: b.source } : {}),
+        ...(b.sensitivity !== undefined ? { sensitivity: str(b.sensitivity, "sensitivity") as "normal" | "private" } : {}),
+      }, typeof idem === "string" ? idem : undefined);
+      send(res, out.created ? 202 : 200, { job: jobJson(out.job) });
+    }],
+    ["GET", /^\/v1\/jobs$/, ({ key, res, url }) => {
+      const status = url.searchParams.get("status") as JobStatus | null;
+      send(res, 200, { jobs: mantel.listJobs(key, status ? { status } : {}).map(jobJson) });
+    }],
+    ["GET", /^\/v1\/jobs\/([^/]+)$/, ({ key, res, params }) => send(res, 200, jobJson(mantel.job(key, params[0]!)))],
+    ["GET", /^\/v1\/proposals$/, ({ key, res }) => {
+      send(res, 200, { proposals: mantel.proposals(key).map((p) => ({ ...p, createdAt: iso(p.createdAt) })) });
+    }],
+    ["POST", /^\/v1\/proposals\/([^/]+)\/(accept|dismiss)$/, ({ key, res, params }) => {
+      const m = mantel.resolveProposal(key, params[0]!, params[1] === "accept");
+      if (m) one(res, 200, m);
+      else send(res, 204);
     }],
     ["POST", /^\/v1\/erase$/, async ({ key, req, res }) => {
       const b = await readJson(req);
