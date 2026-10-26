@@ -186,7 +186,8 @@ plugins:
 
 - Memories go into the last user message, inside a `<mantel-recall>` block, so the start of the prompt
   stays the same from turn to turn.
-- A request hearth sends to a peer is recalled for a `remote` audience: no private memory leaves with it.
+- A request that leaves the machine (hearth sends it to a peer or a cloud provider) is recalled for a
+  `remote` audience: no private memory leaves with it.
 - A request that names no user gets no memory, and is not learned from.
 - When the reply is done, the latest messages and the reply become an episode, once per request. The
   recalled block becomes a `memory` span, so mantel never learns a memory again from its own recall.

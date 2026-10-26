@@ -1,7 +1,7 @@
 /**
  * mantel as a hearth plugin: recall into a chat request after hearth has routed it, and send the finished
- * exchange to extraction. Where the request runs decides what may be recalled: a request going to a peer
- * only ever gets memories that may leave this machine.
+ * exchange to extraction. Where the request runs decides what may be recalled: a request leaving this
+ * machine, for a peer or a cloud provider, only ever gets memories that may leave it.
  */
 import { createHash } from "node:crypto";
 
@@ -85,7 +85,7 @@ export function spansOf(messages: Message[], reply: string | null, localTools: r
 interface HookBody {
   hook?: string;
   kind?: string;
-  request?: { id?: string; target?: string; caller?: string; headers?: Record<string, string>; body?: { messages?: Message[] } };
+  request?: { id?: string; target?: string; leaves?: boolean; caller?: string; headers?: Record<string, string>; body?: { messages?: Message[] } };
   exchange?: { id?: string; caller?: string; status?: number; headers?: Record<string, string>; body?: { messages?: Message[] }; reply?: string | null };
 }
 
@@ -109,8 +109,8 @@ export async function hearthHook(mantel: Mantel, key: ApiKey, cfg: HearthHookCon
     const last = [...messages].reverse().find((m) => m.role === "user");
     const q = last ? split(last.content).text : "";
     if (!who || !q.trim()) return {};
-    // A request leaving for a peer gets only memories that may leave this machine.
-    const audience = r.target === "peer" ? "remote" : "local";
+    // A request leaving this machine (for a peer, or a cloud provider) gets only memories that may leave it.
+    const audience = (r.leaves ?? r.target === "peer") ? "remote" : "local";
     const out = await mantel.recall(key, { ...who, audience }, q, { k: cfg.k });
     if (!out.hits.length) return {};
     return { decision: { body: { ...r.body, messages: inject(messages, out.context) } } };

@@ -76,6 +76,10 @@ test("routed: memories go into the last user message, and a request leaving for 
   const peer = (await (await call(routed([{ role: "user", content: "user helix editor medical notes" }], { target: "peer" }))).json()) as { decision?: { body: { messages: { content: string }[] } } };
   assert.ok(peer.decision, "normal memories still go to a peer");
   assert.doesNotMatch(peer.decision!.body.messages.at(-1)!.content, /medical notes is helix/, "a private memory never leaves with a request bound for a peer");
+
+  const body = routed([{ role: "user", content: "user helix editor medical notes" }]);
+  const cloud = (await (await call({ ...body, request: { ...body.request, target: "local", leaves: true } })).json()) as { decision?: { body: { messages: { content: string }[] } } };
+  assert.doesNotMatch(cloud.decision!.body.messages.at(-1)!.content, /medical notes is helix/, "nor with one bound for a cloud provider, which hearth calls local");
 });
 
 test("routed: nobody named, no memory; a caller can be mapped to a user", async () => {
